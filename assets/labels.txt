@@ -1,0 +1,4 @@
+over-ripe
+partially-ripe
+ripe
+unripe
