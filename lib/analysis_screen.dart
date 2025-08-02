@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
-/// Halaman untuk menampilkan dan menganalisis satu gambar statis.
 class AnalysisScreen extends StatefulWidget {
   final String imagePath;
   const AnalysisScreen({super.key, required this.imagePath});
@@ -21,7 +20,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   bool _isLoading = true;
   Size? _imageSize;
 
-  // Konstanta untuk konfigurasi model.
   final int _modelInputSize = 640;
   final double _confidenceThreshold = 0.5;
   final double _iouThreshold = 0.4;
@@ -38,7 +36,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     super.dispose();
   }
 
-  /// Fungsi utama untuk mengorkestrasi seluruh proses analisis gambar.
   Future<void> _analyzeImage() async {
     await _loadModel();
     await _loadLabels();
@@ -56,16 +53,15 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     if(mounted) setState(() => _isLoading = false);
   }
 
-  /// Memuat model TFLite dari folder assets.
   Future<void> _loadModel() async {
     try {
+      // Hapus GPU delegate untuk kompatibilitas maksimal
       _interpreter = await Interpreter.fromAsset('assets/model.tflite');
     } catch (e) {
       debugPrint("Error loading model: $e");
     }
   }
 
-  /// Memuat file label dari folder assets.
   Future<void> _loadLabels() async {
     try {
       final labelsData = await rootBundle.loadString('assets/labels.txt');
@@ -75,7 +71,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     }
   }
 
-  /// Mendapatkan dimensi (lebar dan tinggi) dari file gambar.
   Future<void> _getImageSize(String path) async {
     final bytes = await File(path).readAsBytes();
     final decoded = await decodeImageFromList(bytes);
@@ -86,7 +81,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     }
   }
 
-  /// Mempersiapkan gambar dan menjalankan inferensi menggunakan interpreter TFLite.
   Future<List<dynamic>> _runInferenceOnImage(img.Image image) async {
     img.Image resizedImage = img.copyResize(image, width: _modelInputSize, height: _modelInputSize);
 
@@ -94,7 +88,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     var imageAsList = imageBytes.map((b) => b / 255.0).toList();
     var input = Float32List.fromList(imageAsList).reshape([1, _modelInputSize, _modelInputSize, 3]);
 
-    // Karena label Anda ada 4, maka 4+4 = 8.
     var output = List.filled(1 * 8 * 8400, 0.0).reshape([1, 8, 8400]);
 
     _interpreter?.run(input, output);
@@ -108,7 +101,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     return _processOutput(doubleOutput);
   }
 
-  /// Memproses output mentah dari model menjadi daftar deteksi yang bersih.
   List<dynamic> _processOutput(List<List<List<double>>> output) {
     List<Rect> boxes = [];
     List<double> scores = [];
@@ -141,7 +133,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     }).toList();
   }
 
-  /// Algoritma Non-Maximum Suppression (NMS).
   List<int> _nonMaxSuppression(List<Rect> boxes, List<double> scores) {
     List<int> selectedIndexes = [];
     List<int> indexes = List.generate(scores.length, (i) => i)..sort((a, b) => scores[b].compareTo(scores[a]));
@@ -153,10 +144,17 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     return selectedIndexes;
   }
 
-  /// Menghitung Intersection over Union (IoU) antara dua kotak.
   double _calculateIoU(Rect rect1, Rect rect2) {
-    final double intersectionArea = (rect1.intersect(rect2)).width * (rect1.intersect(rect2)).height;
+    final double intersectionX = (rect1.left < rect2.left) ? rect2.left : rect1.left;
+    final double intersectionY = (rect1.top < rect2.top) ? rect2.top : rect1.top;
+    final double intersectionWidth = ((rect1.left + rect1.width) < (rect2.left + rect2.width)) ? (rect1.left + rect1.width) : (rect2.left + rect2.width) - intersectionX;
+    final double intersectionHeight = ((rect1.top + rect1.height) < (rect2.top + rect2.height)) ? (rect1.top + rect1.height) : (rect2.top + rect2.height) - intersectionY;
+
+    final double intersectionArea = intersectionWidth * intersectionHeight;
     final double unionArea = rect1.width * rect1.height + rect2.width * rect2.height - intersectionArea;
+
+    if (unionArea <= 0 || intersectionArea <= 0) return 0.0;
+
     return intersectionArea / unionArea;
   }
 
@@ -182,7 +180,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     );
   }
 
-  /// Widget untuk membangun tumpukan (Stack) dari gambar dan kotak-kotak deteksi.
   Widget _buildImageWithBoxes() {
     return FittedBox(
       child: SizedBox(
@@ -221,7 +218,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     );
   }
 
-  /// Widget untuk membangun daftar (ListView) dari objek yang terdeteksi.
   Widget _buildDetectedObjectList() {
     if (_recognitions.isEmpty) {
       return const Padding(

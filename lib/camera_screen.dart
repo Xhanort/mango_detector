@@ -45,7 +45,18 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    final CameraController? cameraController = _cameraController;
+
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive) {
+      // Saat aplikasi tidak aktif (misal: pindah ke halaman lain),
+      // lepaskan controller untuk membebaskan kamera.
+      cameraController.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      // Saat aplikasi kembali aktif, buat ulang controller kamera.
       _initializeCamera();
     }
   }
@@ -58,17 +69,17 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   }
 
   Future<void> _initializeCamera() async {
-    if (_cameraController != null && _cameraController!.value.isInitialized) {
-      return;
-    }
     final cameras = await availableCameras();
-    // OPTIMASI: Gunakan resolusi medium untuk mengurangi beban kerja
-    _cameraController = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
+    // Gunakan controller baru untuk re-inisialisasi
+    final controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
+
+    // Ganti controller lama dengan yang baru
+    _cameraController = controller;
 
     try {
-      await _cameraController!.initialize();
-      await _cameraController!.setFlashMode(FlashMode.off);
-      _cameraController!.startImageStream(_runInferenceOnStream);
+      await controller.initialize();
+      await controller.setFlashMode(FlashMode.off);
+      await controller.startImageStream(_runInferenceOnStream);
     } catch (e) {
       debugPrint("Error initializing camera: $e");
     }
@@ -80,14 +91,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   Future<void> _loadModel() async {
     try {
-      final options = InterpreterOptions();
-      // OPTIMASI: Gunakan GPU Delegate untuk mempercepat inferensi
-      if (Platform.isAndroid) {
-        options.addDelegate(GpuDelegateV2());
-      } else if (Platform.isIOS) {
-        options.addDelegate(GpuDelegate());
-      }
-      _interpreter = await Interpreter.fromAsset('assets/model.tflite', options: options);
+      // Versi stabil tanpa GPU Delegate
+      _interpreter = await Interpreter.fromAsset('assets/model.tflite');
     } catch (e) {
       debugPrint("Error loading model: $e");
     }
@@ -103,9 +108,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   }
 
   void _runInferenceOnStream(CameraImage cameraImage) {
-    // OPTIMASI: Kurangi frekuensi deteksi menjadi ~1-2 kali per detik
     _frameCounter++;
-    if (_frameCounter % 45 != 0) return;
+    if (_frameCounter % 45 != 0) return; // Frekuensi deteksi lebih rendah untuk stabilitas
     if (_isBusy) return;
     _isBusy = true;
 
@@ -131,7 +135,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         _isTakingPicture = true;
       });
 
-      await _cameraController!.stopImageStream();
+      // Tidak perlu stop stream jika controller akan di-dispose oleh lifecycle
       final imageFile = await _cameraController!.takePicture();
 
       if (mounted) {
@@ -160,7 +164,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     var imageAsList = imageBytes.map((b) => b / 255.0).toList();
     var input = Float32List.fromList(imageAsList).reshape([1, _modelInputSize, _modelInputSize, 3]);
 
-    var output = List.filled(1 * 8 * 8400, 0.0).reshape([1, 8, 8400]);
+    var output = List.filled(1 * (_labels.length + 4) * 8400, 0.0).reshape([1, (_labels.length + 4), 8400]);
 
     _interpreter?.run(input, output);
 
