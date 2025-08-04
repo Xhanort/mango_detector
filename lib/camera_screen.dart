@@ -4,6 +4,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
+import 'package:image_picker/image_picker.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'analysis_screen.dart';
 
@@ -24,9 +25,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   int _frameCounter = 0;
   bool _isTakingPicture = false;
 
+  // --- Variabel Konfigurasi ---
   final int _modelInputSize = 640;
-  final double _confidenceThreshold = 0.5;
-  final double _iouThreshold = 0.2;
+  final double _confidenceThreshold = 0.6; // Sedikit diturunkan untuk real-time
+  final double _iouThreshold = 0.5;
 
   @override
   void initState() {
@@ -52,11 +54,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
 
     if (state == AppLifecycleState.inactive) {
-      // Saat aplikasi tidak aktif (misal: pindah ke halaman lain),
-      // lepaskan controller untuk membebaskan kamera.
       cameraController.dispose();
     } else if (state == AppLifecycleState.resumed) {
-      // Saat aplikasi kembali aktif, buat ulang controller kamera.
       _initializeCamera();
     }
   }
@@ -70,10 +69,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   Future<void> _initializeCamera() async {
     final cameras = await availableCameras();
-    // Gunakan controller baru untuk re-inisialisasi
     final controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
 
-    // Ganti controller lama dengan yang baru
     _cameraController = controller;
 
     try {
@@ -91,7 +88,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   Future<void> _loadModel() async {
     try {
-      // Versi stabil tanpa GPU Delegate
       _interpreter = await Interpreter.fromAsset('assets/model.tflite');
     } catch (e) {
       debugPrint("Error loading model: $e");
@@ -109,7 +105,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   void _runInferenceOnStream(CameraImage cameraImage) {
     _frameCounter++;
-    if (_frameCounter % 10 != 0) return; // Frekuensi deteksi lebih rendah untuk stabilitas
+    if (_frameCounter % 45 != 0) return; // Dibuat tidak lag
     if (_isBusy) return;
     _isBusy = true;
 
@@ -124,18 +120,14 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   Future<void> _takePicture() async {
     if (_isTakingPicture) return;
-
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      debugPrint("Error: Camera not initialized.");
-      return;
-    }
+    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
 
     try {
       setState(() {
         _isTakingPicture = true;
       });
 
-      // Tidak perlu stop stream jika controller akan di-dispose oleh lifecycle
+      await _cameraController!.stopImageStream();
       final imageFile = await _cameraController!.takePicture();
 
       if (mounted) {
@@ -157,23 +149,43 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _pickImageFromGallery() async {
+    if (_isTakingPicture) return; // Mencegah proses ganda
+    final ImagePicker picker = ImagePicker();
+    final XFile? imageFile = await picker.pickImage(source: ImageSource.gallery);
+
+    if (imageFile != null && mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AnalysisScreen(imagePath: imageFile.path),
+        ),
+      );
+    }
+  }
+
+  Future<void> _toggleFlash() async {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
+    try {
+      final currentMode = _cameraController!.value.flashMode;
+      final newMode = currentMode == FlashMode.torch ? FlashMode.off : FlashMode.torch;
+      await _cameraController!.setFlashMode(newMode);
+      if (mounted) {
+        setState(() {});
+      }
+    } catch (e) {
+      debugPrint("Error toggling flash: $e");
+    }
+  }
+
   Future<List<dynamic>> _runInferenceOnImage(img.Image image) async {
     img.Image resizedImage = img.copyResize(image, width: _modelInputSize, height: _modelInputSize);
-
     var imageBytes = resizedImage.getBytes(order: img.ChannelOrder.rgb);
     var imageAsList = imageBytes.map((b) => b / 255.0).toList();
     var input = Float32List.fromList(imageAsList).reshape([1, _modelInputSize, _modelInputSize, 3]);
-
     var output = List.filled(1 * (_labels.length + 4) * 8400, 0.0).reshape([1, (_labels.length + 4), 8400]);
-
     _interpreter?.run(input, output);
-
-    final List<List<List<double>>> doubleOutput = (output as List).map((e) =>
-        (e as List).map((f) =>
-            (f as List).map((g) => (g as num).toDouble()).toList()
-        ).toList()
-    ).toList();
-
+    final List<List<List<double>>> doubleOutput = (output as List).map((e) => (e as List).map((f) => (f as List).map((g) => (g as num).toDouble()).toList()).toList()).toList();
     return _processOutput(doubleOutput);
   }
 
@@ -181,7 +193,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     List<Rect> boxes = [];
     List<double> scores = [];
     List<int> classIndexes = [];
-
     for (int i = 0; i < output[0][0].length; i++) {
       double maxScore = 0;
       int maxClassIndex = -1;
@@ -203,11 +214,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       }
     }
     List<int> nmsIndexes = _nonMaxSuppression(boxes, scores);
-    return nmsIndexes.map((index) => {
-      "rect": boxes[index],
-      "confidence": scores[index],
-      "label": _labels[classIndexes[index]],
-    }).toList();
+    return nmsIndexes.map((index) => {"rect": boxes[index], "confidence": scores[index], "label": _labels[classIndexes[index]],}).toList();
   }
 
   @override
@@ -232,7 +239,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  IconButton(icon: const Icon(Icons.flash_off, color: Colors.white, size: 30), onPressed: () => _cameraController?.setFlashMode(FlashMode.off)),
+                  IconButton(icon: const Icon(Icons.photo_library, color: Colors.white, size: 30), onPressed: _pickImageFromGallery),
                   GestureDetector(
                     onTap: _takePicture,
                     child: Container(
@@ -240,7 +247,14 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 4)),
                     ),
                   ),
-                  IconButton(icon: const Icon(Icons.flash_on, color: Colors.white, size: 30), onPressed: () => _cameraController?.setFlashMode(FlashMode.torch)),
+                  IconButton(
+                    icon: Icon(
+                      _cameraController?.value.flashMode == FlashMode.torch ? Icons.flash_on : Icons.flash_off,
+                      color: Colors.white,
+                      size: 30,
+                    ),
+                    onPressed: _toggleFlash,
+                  ),
                 ],
               ),
             ),
@@ -258,10 +272,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     final yPlane = image.planes[0].bytes;
     final uPlane = image.planes[1].bytes;
     final vPlane = image.planes[2].bytes;
-
     final img.Image convertedImage = img.Image(width: width, height: height);
     if (uvPixelStride == null) return convertedImage;
-
     for (int y = 0; y < height; y++) {
       for (int x = 0; x < width; x++) {
         final int uvIndex = uvPixelStride * (x / 2).floor() + uvRowStride * (y / 2).floor();
@@ -294,12 +306,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     final double intersectionY = (rect1.top < rect2.top) ? rect2.top : rect1.top;
     final double intersectionWidth = ((rect1.left + rect1.width) < (rect2.left + rect2.width)) ? (rect1.left + rect1.width) : (rect2.left + rect2.width) - intersectionX;
     final double intersectionHeight = ((rect1.top + rect1.height) < (rect2.top + rect2.height)) ? (rect1.top + rect1.height) : (rect2.top + rect2.height) - intersectionY;
-
-    final double intersectionArea = intersectionWidth * intersectionHeight;
+    final double intersectionArea = intersectionWidth > 0 && intersectionHeight > 0 ? intersectionWidth * intersectionHeight : 0;
     final double unionArea = rect1.width * rect1.height + rect2.width * rect2.height - intersectionArea;
-
-    if (unionArea <= 0 || intersectionArea <= 0) return 0.0;
-
+    if (unionArea <= 0) return 0.0;
     return intersectionArea / unionArea;
   }
 
@@ -313,17 +322,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         width: rect.width * screen.width,
         height: rect.height * screen.height,
         child: Container(
-          decoration: BoxDecoration(border: Border.all(color: Colors.amber, width: 2), borderRadius: BorderRadius.circular(8)),
-          child: Align(
-            alignment: Alignment.topLeft,
-            child: Container(
-              color: Colors.black.withOpacity(0.5),
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              child: Text(
-                "${re['label']} ${(re['confidence'] * 100).toStringAsFixed(0)}%",
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-              ),
-            ),
+          decoration: BoxDecoration(
+              border: Border.all(color: Colors.amber, width: 2),
+              borderRadius: BorderRadius.circular(8)
           ),
         ),
       );
