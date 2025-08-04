@@ -26,7 +26,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   final int _modelInputSize = 640;
   final double _confidenceThreshold = 0.5;
-  final double _iouThreshold = 0.4;
+  final double _iouThreshold = 0.2;
 
   @override
   void initState() {
@@ -109,7 +109,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   void _runInferenceOnStream(CameraImage cameraImage) {
     _frameCounter++;
-    if (_frameCounter % 45 != 0) return; // Frekuensi deteksi lebih rendah untuk stabilitas
+    if (_frameCounter % 10 != 0) return; // Frekuensi deteksi lebih rendah untuk stabilitas
     if (_isBusy) return;
     _isBusy = true;
 
