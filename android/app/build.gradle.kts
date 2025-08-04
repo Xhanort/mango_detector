@@ -1,15 +1,15 @@
 plugins {
     id("com.android.application")
     id("kotlin-android")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+// The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
 android {
+
     namespace = "com.example.mango_ripeness"
     compileSdk = 36
     ndkVersion = "27.0.12077973"
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -18,12 +18,11 @@ android {
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_11.toString()
     }
-
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+// TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.mango_ripeness"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+// You can update the following values to match your application needs.
+// For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 21
         targetSdk = 36
         versionCode = 1
@@ -33,7 +32,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
-            // Ganti titik koma (;) dengan koma (,) di sini
+
+// Ganti titik koma (;) dengan koma (,) di sini
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

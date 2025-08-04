@@ -22,7 +22,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
 
   final int _modelInputSize = 640;
   final double _confidenceThreshold = 0.5;
-  final double _iouThreshold = 0.4;
+  final double _iouThreshold = 0.3;
 
   @override
   void initState() {

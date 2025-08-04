@@ -1,4 +1,4 @@
-// Import library Flutter dan eksternal
+// Import library yang dibutuhkan
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -6,41 +6,34 @@ import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
-
-import 'analysis_screen.dart'; // Layar hasil analisis setelah ambil foto
+import 'analysis_screen.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
-
   @override
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
 class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver {
-  // Variabel untuk kamera dan model
   CameraController? _cameraController;
   Interpreter? _interpreter;
-
-  // Label dan hasil deteksi
   List<String> _labels = [];
-  List<dynamic> _recognitions = [];
-
-  // Status
   bool _isLoaded = false;
+  List<Map<String, dynamic>> _recognitions = [];
   bool _isBusy = false;
-  int _frameCounter = 0;
   bool _isTakingPicture = false;
+  int _frameCounter = 0; // DIKEMBALIKAN untuk optimasi
 
-  // Konfigurasi model YOLO
+  // --- Variabel Konfigurasi ---
   final int _inputSize = 640;
-  final double _confThreshold = 0.6;
-  final double _iouThreshold = 0.5;
+  final double _confThreshold = 0.5; // Diturunkan sedikit untuk deteksi real-time
+  final double _iouThreshold = 0.3;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _initialize(); // Inisialisasi model, kamera, dan label
+    _initialize();
   }
 
   @override
@@ -51,140 +44,178 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     super.dispose();
   }
 
-  // Fungsi utama untuk inisialisasi
-  Future<void> _initialize() async {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final CameraController? cameraController = _cameraController;
+
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive) {
+      cameraController.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initializeCamera();
+    }
+  }
+
+  void _initialize() async {
     await _loadModel();
     await _loadLabels();
-    await _initCamera();
-    setState(() => _isLoaded = true);
+    await _initializeCamera();
   }
 
-  // Inisialisasi kamera
-  Future<void> _initCamera() async {
+  Future<void> _initializeCamera() async {
     final cameras = await availableCameras();
-    _cameraController = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
-    await _cameraController!.initialize();
-    await _cameraController!.setFlashMode(FlashMode.off);
-    await _cameraController!.startImageStream(_runInferenceOnStream);
-    setState(() {});
+    // Buat controller baru setiap kali inisialisasi
+    final controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
+    _cameraController = controller;
+
+    try {
+      await controller.initialize();
+      await controller.setFlashMode(FlashMode.off);
+      await controller.startImageStream(_processCameraImage);
+      if (mounted) {
+        setState(() => _isLoaded = true);
+      }
+    } catch (e) {
+      debugPrint("Error initializing camera: $e");
+    }
   }
 
-  // Load model TFLite
   Future<void> _loadModel() async {
     try {
       _interpreter = await Interpreter.fromAsset('assets/model.tflite');
-    } catch (e) {
-      debugPrint('Model error: $e');
+    } catch(e) {
+      debugPrint("Error loading model: $e");
     }
   }
 
-  // Load label dari file labels.txt
   Future<void> _loadLabels() async {
     try {
       final labelData = await rootBundle.loadString('assets/labels.txt');
-      _labels = labelData.split('\n').where((l) => l.isNotEmpty).toList();
-    } catch (e) {
-      debugPrint('Label error: $e');
+      _labels = labelData.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    } catch(e) {
+      debugPrint("Error loading labels: $e");
     }
   }
 
-  // Fungsi untuk melakukan inferensi pada stream kamera
-  void _runInferenceOnStream(CameraImage image) {
+  // --- PERUBAHAN UNTUK PERFORMA ---
+  void _processCameraImage(CameraImage image) {
     _frameCounter++;
-    if (_frameCounter % 30 != 0 || _isBusy) return;
+    if (_frameCounter % 60 != 0) return; // Hanya proses 1 dari 30 frame
+
+    if (_isBusy || !_isLoaded) return;
 
     _isBusy = true;
 
-    Future(() async {
+    Future.microtask(() async {
       final img.Image rgbImage = _convertYUV420toImage(image);
-      final results = await _runModel(rgbImage);
+      final recognitions = await _runModel(rgbImage);
       if (mounted) {
-        setState(() => _recognitions = results);
+        setState(() => _recognitions = recognitions);
       }
-    }).whenComplete(() => _isBusy = false);
+      _isBusy = false;
+    });
   }
 
-  // Ambil foto dan pindah ke layar analisis
+  // --- PERUBAHAN UNTUK STABILITAS ---
   Future<void> _takePicture() async {
     if (_isTakingPicture || _cameraController == null) return;
 
+    setState(() => _isTakingPicture = true);
+
     try {
-      setState(() => _isTakingPicture = true);
-      await _cameraController!.stopImageStream();
-
       final file = await _cameraController!.takePicture();
-
       if (mounted) {
         await Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => AnalysisScreen(imagePath: file.path)),
         );
-        await _cameraController!.startImageStream(_runInferenceOnStream);
       }
     } catch (e) {
-      debugPrint("Take picture error: $e");
+      debugPrint("Error taking picture: $e");
     } finally {
-      setState(() => _isTakingPicture = false);
+      if (mounted) {
+        setState(() => _isTakingPicture = false);
+      }
     }
   }
 
-  // Proses gambar untuk model
-  Future<List<dynamic>> _runModel(img.Image image) async {
-    final img.Image resized = img.copyResize(image, width: _inputSize, height: _inputSize);
-    final imageBytes = resized.getBytes(order: img.ChannelOrder.rgb).map((e) => e / 255.0).toList();
-    final input = Float32List.fromList(imageBytes).reshape([1, _inputSize, _inputSize, 3]);
-
-    final output = List.filled(1 * (_labels.length + 4) * 8400, 0.0).reshape([1, (_labels.length + 4), 8400]);
-    _interpreter?.run(input, output);
-
-    final List<List<List<double>>> casted = (output as List)
-        .map((e) => (e as List).map((f) => (f as List).map((g) => (g as num).toDouble()).toList()).toList()).toList();
-
-    return _processOutput(casted);
+  // --- PERUBAHAN UNTUK STABILITAS ---
+  Future<void> _pickImageFromGallery() async {
+    if (_isTakingPicture) return;
+    final picker = ImagePicker();
+    final img = await picker.pickImage(source: ImageSource.gallery);
+    if (img != null && mounted) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => AnalysisScreen(imagePath: img.path)),
+      );
+    }
   }
 
-  // Proses hasil model menjadi daftar bounding box
-  List<dynamic> _processOutput(List<List<List<double>>> output) {
-    List<Rect> boxes = [];
-    List<double> scores = [];
-    List<int> classes = [];
+  // --- FUNGSI BARU UNTUK FLASH TOGGLE ---
+  Future<void> _toggleFlash() async {
+    if (_cameraController == null) return;
+    try {
+      final currentMode = _cameraController!.value.flashMode;
+      final nextMode = currentMode == FlashMode.torch ? FlashMode.off : FlashMode.torch;
+      await _cameraController!.setFlashMode(nextMode);
+      setState(() {});
+    } catch(e) {
+      debugPrint("Error toggling flash: $e");
+    }
+  }
 
-    for (int i = 0; i < output[0][0].length; i++) {
+  Future<List<Map<String, dynamic>>> _runModel(img.Image image) async {
+    final resized = img.copyResize(image, width: _inputSize, height: _inputSize);
+    final inputImage = resized.getBytes(order: img.ChannelOrder.rgb).map((e) => e / 255.0).toList();
+    final input = Float32List.fromList(inputImage).reshape([1, _inputSize, _inputSize, 3]);
+
+    final output = List.filled(1 * (_labels.length + 4) * 8400, 0.0).reshape([1, _labels.length + 4, 8400]);
+    _interpreter?.run(input, output);
+
+    final boxes = <Rect>[];
+    final scores = <double>[];
+    final classes = <int>[];
+
+    for (int i = 0; i < 8400; i++) {
       double maxScore = 0;
-      int maxIndex = -1;
-
+      int classIndex = -1;
       for (int j = 0; j < _labels.length; j++) {
         final score = output[0][j + 4][i];
         if (score > maxScore) {
           maxScore = score;
-          maxIndex = j;
+          classIndex = j;
         }
       }
-
       if (maxScore > _confThreshold) {
         final cx = output[0][0][i];
         final cy = output[0][1][i];
         final w = output[0][2][i];
         final h = output[0][3][i];
-        boxes.add(Rect.fromLTWH(cx - w / 2, cy - h / 2, w, h));
+        final left = (cx - w / 2).clamp(0.0, 1.0);
+        final top = (cy - h / 2).clamp(0.0, 1.0);
+        final width = w.clamp(0.0, 1.0 - left);
+        final height = h.clamp(0.0, 1.0 - top);
+        boxes.add(Rect.fromLTWH(left, top, width, height));
         scores.add(maxScore);
-        classes.add(maxIndex);
+        classes.add(classIndex);
       }
     }
 
-    final selected = _nonMaxSuppression(boxes, scores);
-
-    return selected.map((i) => {
+    final selectedIndexes = _nonMaxSuppression(boxes, scores);
+    return selectedIndexes.map((i) => {
       "rect": boxes[i],
       "confidence": scores[i],
       "label": _labels[classes[i]]
     }).toList();
   }
 
-  // Konversi dari format YUV420 (kamera) ke RGB image
   img.Image _convertYUV420toImage(CameraImage image) {
-    final int width = image.width;
-    final int height = image.height;
+    final width = image.width;
+    final height = image.height;
     final uvRowStride = image.planes[1].bytesPerRow;
     final uvPixelStride = image.planes[1].bytesPerPixel!;
     final img.Image imgBuffer = img.Image(width: width, height: height);
@@ -199,47 +230,42 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         int r = (yp + vp * 1.402).round().clamp(0, 255);
         int g = (yp - up * 0.344 - vp * 0.714).round().clamp(0, 255);
         int b = (yp + up * 1.772).round().clamp(0, 255);
+
         imgBuffer.setPixelRgb(x, y, r, g, b);
       }
     }
-
     return imgBuffer;
   }
 
-  // Non-max suppression: hilangkan bounding box yang tumpang tindih
   List<int> _nonMaxSuppression(List<Rect> boxes, List<double> scores) {
-    List<int> selected = [];
-    List<int> indexes = List.generate(scores.length, (i) => i);
+    final picked = <int>[];
+    final indexes = List.generate(scores.length, (i) => i);
     indexes.sort((a, b) => scores[b].compareTo(scores[a]));
 
     while (indexes.isNotEmpty) {
-      int current = indexes.removeAt(0);
-      selected.add(current);
+      final current = indexes.removeAt(0);
+      picked.add(current);
       indexes.removeWhere((i) => _iou(boxes[current], boxes[i]) > _iouThreshold);
     }
-
-    return selected;
+    return picked;
   }
 
-  // Hitung IoU antara dua box
   double _iou(Rect a, Rect b) {
-    final x1 = a.left > b.left ? a.left : b.left;
-    final y1 = a.top > b.top ? a.top : b.top;
-    final x2 = (a.right < b.right ? a.right : b.right);
-    final y2 = (a.bottom < b.bottom ? a.bottom : b.bottom);
+    final interX1 = a.left > b.left ? a.left : b.left;
+    final interY1 = a.top > b.top ? a.top : b.top;
+    final interX2 = (a.right < b.right ? a.right : b.right);
+    final interY2 = (a.bottom < b.bottom ? a.bottom : b.bottom);
 
-    final intersection = (x2 - x1).clamp(0, double.infinity) * (y2 - y1).clamp(0, double.infinity);
-    final union = a.width * a.height + b.width * b.height - intersection;
-    return intersection / union;
+    final interArea = (interX2 - interX1).clamp(0.0, double.infinity) *
+        (interY2 - interY1).clamp(0.0, double.infinity);
+    final unionArea = a.width * a.height + b.width * b.height - interArea;
+    return (unionArea > 0) ? interArea / unionArea : 0.0;
   }
 
-  // Render bounding box ke atas kamera
   List<Widget> _renderBoxes(BuildContext context) {
     final screen = MediaQuery.of(context).size;
     return _recognitions.map((r) {
       final rect = r["rect"] as Rect;
-      final label = r["label"] as String;
-      final confidence = (r["confidence"] as double).toStringAsFixed(2);
       return Positioned(
         left: rect.left * screen.width,
         top: rect.top * screen.height,
@@ -250,20 +276,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
             border: Border.all(color: Colors.amber, width: 2),
             borderRadius: BorderRadius.circular(6),
           ),
-          child: Align(
-            alignment: Alignment.topLeft,
-            child: Container(
-              color: Colors.amber,
-              padding: const EdgeInsets.all(4),
-              child: Text('$label: $confidence', style: const TextStyle(color: Colors.black)),
-            ),
-          ),
         ),
       );
     }).toList();
   }
 
-  // Build tampilan utama
   @override
   Widget build(BuildContext context) {
     if (!_isLoaded || _cameraController == null || !_cameraController!.value.isInitialized) {
@@ -287,21 +304,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  // Buka galeri
                   IconButton(
                     icon: const Icon(Icons.photo_library, color: Colors.white),
-                    onPressed: () async {
-                      final picker = ImagePicker();
-                      final img = await picker.pickImage(source: ImageSource.gallery);
-                      if (img != null && mounted) {
-                        await Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => AnalysisScreen(imagePath: img.path)),
-                        );
-                      }
-                    },
+                    onPressed: _pickImageFromGallery,
                   ),
-                  // Tombol foto
                   GestureDetector(
                     onTap: _takePicture,
                     child: Container(
@@ -313,18 +319,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       ),
                     ),
                   ),
-                  // Flash on/off
                   IconButton(
                     icon: Icon(
                       _cameraController?.value.flashMode == FlashMode.torch ? Icons.flash_on : Icons.flash_off,
                       color: Colors.white,
                     ),
-                    onPressed: () async {
-                      final mode = _cameraController!.value.flashMode;
-                      final newMode = mode == FlashMode.torch ? FlashMode.off : FlashMode.torch;
-                      await _cameraController!.setFlashMode(newMode);
-                      setState(() {});
-                    },
+                    onPressed: _toggleFlash,
                   )
                 ],
               ),
