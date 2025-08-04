@@ -56,7 +56,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   Future<void> _loadModel() async {
     try {
       // Hapus GPU delegate untuk kompatibilitas maksimal
-      _interpreter = await Interpreter.fromAsset('assets/model.tflite');
+      _interpreter = await Interpreter.fromAsset('assets/model2.tflite');
     } catch (e) {
       debugPrint("Error loading model: $e");
     }
